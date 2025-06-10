@@ -1,17 +1,20 @@
+import math
 import os
 import sys
 import time
-import math
 
 from PyQt5.QtCore import Qt, QPoint, QTimer
 from PyQt5.QtGui import QPixmap
+from PyQt5.QtGui import QVector2D
 from PyQt5.QtWidgets import QApplication, QLabel, QWidget
+
+from DesktopInteractionManager import DesktopInteractionManager
 
 
 class PhysicsSettings:
-    gravity = 500.0  # pixels per second squared
-    friction = 300  # per second
-    air_resistance = 0.95 # per second
+    gravity = 5000.0  # pixels per second squared
+    friction = 2000.0  # per second
+    air_resistance = 0.001
     bounce_damping = 0.5
 
 
@@ -35,13 +38,6 @@ class CharacterWindow(QWidget):
         self.label = QLabel(self)
         self.loadSprite(self.current_sprite)
 
-        # Physics variables
-        # TODO: set position to window's position on the start
-        self.position_x = 300.0
-        self.position_y = 300.0
-        self.velocity_x = 0.0
-        self.velocity_y = 0.0
-
         # Drag tracking
         self.drag_position = QPoint()
         self.is_dragging = False
@@ -51,7 +47,7 @@ class CharacterWindow(QWidget):
 
         # Physics timer
         self.physics_timer = QTimer()
-        self.physics_timer.timeout.connect(self.update_physics)
+        self.physics_timer.timeout.connect(self.updatePhysics)
         self.physics_timer.start(16)  # ~60 FPS
         self.last_physics_time = time.time()
 
@@ -60,18 +56,23 @@ class CharacterWindow(QWidget):
         self.label.mouseMoveEvent = self.mouseMoveEvent
         self.label.mouseReleaseEvent = self.mouseReleaseEvent
 
+        # Show window
         self.show()
+
+        # Physics variables
+        self.position = QVector2D(0.0, 0.0)
+        self.velocity = QVector2D(0.0, 0.0)
+        self.setCharacterPositionToWindowPosition()
 
     def getWindowPosition(self):
         return self.frameGeometry().topLeft()
 
     def setWindowPositionToCharacterPosition(self):
-        self.move(int(self.position_x), int(self.position_y))
+        self.move(self.position.toPoint())
 
     def setCharacterPositionToWindowPosition(self):
         window_pos = self.getWindowPosition()
-        self.position_x = float(window_pos.x())
-        self.position_y = float(window_pos.y())
+        self.position = QVector2D(window_pos)
 
     def loadSprite(self, sprite_name):
         """Load a sprite for the character"""
@@ -101,8 +102,8 @@ class CharacterWindow(QWidget):
         self.last_time = time.time()
         self.drag_history = []
         # Stop current physics movement
-        self.velocity_x = 0
-        self.velocity_y = 0
+        self.velocity.setX(0.0)
+        self.velocity.setY(0.0)
 
     def mouseMoveEvent(self, event):
         if event.buttons() != Qt.LeftButton or not self.is_dragging:
@@ -150,14 +151,10 @@ class CharacterWindow(QWidget):
         if time_diff <= 0:
             return
 
-        dx = recent['pos'].x() - older['pos'].x()
-        dy = recent['pos'].y() - older['pos'].y()
+        pos_diff = recent['pos'] - older['pos']
+        self.velocity = QVector2D(pos_diff) / time_diff
 
-        # Scale velocity (pixels per second)
-        self.velocity_x = (dx / time_diff)
-        self.velocity_y = (dy / time_diff)
-
-    def update_physics(self):
+    def updatePhysics(self):
         if self.is_dragging:
             self.last_physics_time = time.time()
             self.setCharacterPositionToWindowPosition()
@@ -167,54 +164,56 @@ class CharacterWindow(QWidget):
         current_time = time.time()
         dt = current_time - self.last_physics_time
         self.last_physics_time = current_time
-
-        # Skip if delta time is too large (e.g., window was paused)
-        if dt > 0.1:
-            return
+        dt = min(dt, 0.05)
 
         # Get screen dimensions
         screen = QApplication.primaryScreen().geometry()
 
         # Apply gravity
-        self.velocity_y += PhysicsSettings.gravity * dt
+        gravity_force = QVector2D(0.0, PhysicsSettings.gravity * dt)
+        self.velocity += gravity_force
 
         # Apply air resistance
-        # friction_factor = PhysicsSettings.friction ** dt
-        # self.velocity_x *= friction_factor
-        # self.velocity_y *= friction_factor
+        speed_squared = self.velocity.lengthSquared()
+        speed = math.sqrt(speed_squared)
+        air_resistance_force = speed_squared * PhysicsSettings.air_resistance * dt
+        if speed < air_resistance_force:
+            self.velocity.setX(0.0)
+            self.velocity.setY(0.0)
+        else:
+            self.velocity -= self.velocity.normalized() * air_resistance_force
 
         # Get current position
         current_rect = self.geometry()
-        self.position_x += self.velocity_x * dt
-        self.position_y += self.velocity_y * dt
+        self.position += self.velocity * dt
 
         # Bounce off screen edges
-        if self.position_x <= 0.0:
-            self.position_x = 0.0
-            self.velocity_x = abs(self.velocity_x) * PhysicsSettings.bounce_damping
-        elif self.position_x + current_rect.width() >= screen.width():
-            self.position_x = screen.width() - current_rect.width()
-            self.velocity_x = -abs(self.velocity_x) * PhysicsSettings.bounce_damping
+        if self.position.x() <= 0.0:
+            self.position.setX(0.0)
+            self.velocity.setX(abs(self.velocity.x()) * PhysicsSettings.bounce_damping)
+        elif self.position.x() + current_rect.width() >= screen.width():
+            self.position.setX(screen.width() - current_rect.width())
+            self.velocity.setX(-abs(self.velocity.x()) * PhysicsSettings.bounce_damping)
 
-        if self.position_y <= 0.0:
-            self.position_y = 0.0
-            self.velocity_y = abs(self.velocity_y) * PhysicsSettings.bounce_damping
-        elif self.position_y + current_rect.height() >= screen.height():
-            self.position_y = screen.height() - current_rect.height()
-            self.velocity_y = -abs(self.velocity_y) * PhysicsSettings.bounce_damping
+        if self.position.y() <= 0.0:
+            self.position.setY(0.0)
+            self.velocity.setY(abs(self.velocity.y()) * PhysicsSettings.bounce_damping)
+        elif self.position.y() + current_rect.height() >= screen.height():
+            self.position.setY(screen.height() - current_rect.height())
+            self.velocity.setY(-abs(self.velocity.y()) * PhysicsSettings.bounce_damping)
 
             # friction
             friction_force = PhysicsSettings.friction * dt
-            if abs(self.velocity_x) < friction_force:
-                self.velocity_x = 0.0
+            if abs(self.velocity.x()) < friction_force:
+                self.velocity.setX(0.0)
             else:
-                self.velocity_x -= math.copysign(friction_force, self.velocity_x)
+                self.velocity.setX(self.velocity.x() - math.copysign(friction_force, self.velocity.x()))
 
         # Stop very small movements to prevent jitter
-        if abs(self.velocity_x) < 1.0:
-            self.velocity_x = 0.0
-        if abs(self.velocity_y) < 1.0:
-            self.velocity_y = 0.0
+        if abs(self.velocity.x()) < 1.0:
+            self.velocity.setX(0.0)
+        if abs(self.velocity.y()) < 1.0:
+            self.velocity.setY(0.0)
 
         # Update position
         self.setWindowPositionToCharacterPosition()
@@ -230,6 +229,11 @@ class DesktopPetManager:
 
     def __init__(self):
         self.pets = []
+
+        # Debug timer setup
+        self.debug_timer = QTimer()
+        self.debug_timer.timeout.connect(self.debugTick)
+        self.debug_timer.start(1000)
 
     def addPet(self, character_name, character_height=128):
         """Add a new pet to the desktop"""
@@ -248,6 +252,13 @@ class DesktopPetManager:
         for pet in self.pets:
             pet.close()
         self.pets.clear()
+
+    def debugTick(self):
+        DesktopInteractionManager.updateAllWindowsList()
+
+        print(f"[DEBUG] Windows on Desktop:")
+        for window in DesktopInteractionManager.windows:
+            print(window)
 
 
 if __name__ == '__main__':
