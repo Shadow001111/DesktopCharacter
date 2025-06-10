@@ -12,6 +12,7 @@ class WindowInfo:
     class_name: str
     position: Tuple[int, int]
     size: Tuple[int, int]
+    z: int
 
 
 class DesktopInteractionManager:
@@ -20,11 +21,15 @@ class DesktopInteractionManager:
         "Progman",
     )
 
-    windows = []
+    windows: list[WindowInfo] = []
 
     @staticmethod
     def updateAllWindowsList():
+        order_counter = 0
+
         def callback(hwnd, _):
+            nonlocal order_counter
+
             # Skip windows that are not visible to the user
             if not win32gui.IsWindowVisible(hwnd):
                 return
@@ -72,8 +77,11 @@ class DesktopInteractionManager:
                 title=title,
                 class_name=class_name,
                 position=(x, y),
-                size=(x2 - x, y2 - y)
+                size=(x2 - x, y2 - y),
+                z=order_counter
             ))
+
+            order_counter += 1
 
         DesktopInteractionManager.windows.clear()
         win32gui.EnumWindows(callback, None)

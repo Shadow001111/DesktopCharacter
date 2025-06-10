@@ -8,8 +8,7 @@ from PyQt5.QtGui import QPixmap
 from PyQt5.QtGui import QVector2D
 from PyQt5.QtWidgets import QApplication, QLabel, QWidget
 
-from DesktopInteractionManager import DesktopInteractionManager
-from PhysicsObject import PhysicsObject
+from PhysicsObject import PhysicsObject, DesktopInteractionManager
 
 
 class CharacterWindow(QWidget):
@@ -183,12 +182,7 @@ class DesktopPetManager:
         self.pets.clear()
 
     def debugTick(self):
-        return
-        DesktopInteractionManager.updateAllWindowsList()
-
-        print(f"[DEBUG] Windows on Desktop:")
-        for window in DesktopInteractionManager.windows:
-            print(window)
+        pass
 
 
 if __name__ == '__main__':
