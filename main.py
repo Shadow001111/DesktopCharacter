@@ -9,13 +9,7 @@ from PyQt5.QtGui import QVector2D
 from PyQt5.QtWidgets import QApplication, QLabel, QWidget
 
 from DesktopInteractionManager import DesktopInteractionManager
-
-
-class PhysicsSettings:
-    gravity = 5000.0  # pixels per second squared
-    friction = 2000.0  # per second
-    air_resistance = 0.001
-    bounce_damping = 0.5
+from PhysicsObject import PhysicsObject
 
 
 class CharacterWindow(QWidget):
@@ -25,54 +19,40 @@ class CharacterWindow(QWidget):
         self.character_height = character_height
         self.current_sprite = "sprite.png"  # Default sprite
 
-        self.setWindowFlags(
-            Qt.FramelessWindowHint |
-            Qt.WindowStaysOnTopHint |
-            Qt.Tool  # Prevents taskbar icon
-        )
-        self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setAttribute(Qt.WA_NoSystemBackground, True)
-        self.setAttribute(Qt.WA_TransparentForMouseEvents, False)
-
-        # Load character image
-        self.label = QLabel(self)
-        self.loadSprite(self.current_sprite)
+        self.initWindow()
+        self.initSprite()
 
         # Drag tracking
-        self.drag_position = QPoint()
         self.is_dragging = False
+        self.drag_position = QPoint()
         self.last_mouse_pos = QPoint()
-        self.last_time = time.time()
+        self.last_dragging_time = time.time()
         self.drag_history = []  # Store recent positions for velocity calculation
 
-        # Physics timer
-        self.physics_timer = QTimer()
-        self.physics_timer.timeout.connect(self.updatePhysics)
-        self.physics_timer.start(16)  # ~60 FPS
-        self.last_physics_time = time.time()
-
-        # Make it draggable
-        self.label.mousePressEvent = self.mousePressEvent
-        self.label.mouseMoveEvent = self.mouseMoveEvent
-        self.label.mouseReleaseEvent = self.mouseReleaseEvent
+        # Update timer
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.updateFrame)
+        self.timer.start(16)  # ~60 FPS
 
         # Show window
         self.show()
 
-        # Physics variables
-        self.position = QVector2D(0.0, 0.0)
-        self.velocity = QVector2D(0.0, 0.0)
-        self.setCharacterPositionToWindowPosition()
+        # Physics
+        self.physics = PhysicsObject(position=self.frameGeometry().topLeft(),
+                                     size=(self.size().width(), self.size().height()))
+        self.last_physics_time = time.time()
 
-    def getWindowPosition(self):
-        return self.frameGeometry().topLeft()
+    def initWindow(self):
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, False)
 
-    def setWindowPositionToCharacterPosition(self):
-        self.move(self.position.toPoint())
-
-    def setCharacterPositionToWindowPosition(self):
-        window_pos = self.getWindowPosition()
-        self.position = QVector2D(window_pos)
+    def initSprite(self):
+        self.label = QLabel(self)
+        self.loadSprite(self.current_sprite)
+        self.label.mousePressEvent = self.mousePressEvent
+        self.label.mouseMoveEvent = self.mouseMoveEvent
+        self.label.mouseReleaseEvent = self.mouseReleaseEvent
 
     def loadSprite(self, sprite_name):
         """Load a sprite for the character"""
@@ -97,13 +77,11 @@ class CharacterWindow(QWidget):
             return
 
         self.is_dragging = True
-        self.drag_position = event.globalPos() - self.getWindowPosition()
+        self.drag_position = event.globalPos() - self.frameGeometry().topLeft()
         self.last_mouse_pos = event.globalPos()
-        self.last_time = time.time()
+        self.last_dragging_time = time.time()
         self.drag_history = []
-        # Stop current physics movement
-        self.velocity.setX(0.0)
-        self.velocity.setY(0.0)
+        self.physics.velocity = QVector2D(0.0, 0.0)
 
     def mouseMoveEvent(self, event):
         if event.buttons() != Qt.LeftButton or not self.is_dragging:
@@ -116,7 +94,7 @@ class CharacterWindow(QWidget):
         self.move(current_pos - self.drag_position)
 
         # Track movement history for velocity calculation
-        if current_time - self.last_time <= 0:
+        if current_time - self.last_dragging_time <= 0:
             return
 
         self.drag_history.append({
@@ -128,7 +106,7 @@ class CharacterWindow(QWidget):
         self.drag_history = [h for h in self.drag_history if current_time - h['time'] < 0.1]
 
         self.last_mouse_pos = current_pos
-        self.last_time = current_time
+        self.last_dragging_time = current_time
 
     def mouseReleaseEvent(self, event):
         if event.button() != Qt.LeftButton or not self.is_dragging:
@@ -152,76 +130,27 @@ class CharacterWindow(QWidget):
             return
 
         pos_diff = recent['pos'] - older['pos']
-        self.velocity = QVector2D(pos_diff) / time_diff
-
-    def updatePhysics(self):
-        if self.is_dragging:
-            self.last_physics_time = time.time()
-            self.setCharacterPositionToWindowPosition()
-            return
-
-        # Calculate delta time
-        current_time = time.time()
-        dt = current_time - self.last_physics_time
-        self.last_physics_time = current_time
-        dt = min(dt, 0.05)
-
-        # Get screen dimensions
-        screen = QApplication.primaryScreen().geometry()
-
-        # Apply gravity
-        gravity_force = QVector2D(0.0, PhysicsSettings.gravity * dt)
-        self.velocity += gravity_force
-
-        # Apply air resistance
-        speed_squared = self.velocity.lengthSquared()
-        speed = math.sqrt(speed_squared)
-        air_resistance_force = speed_squared * PhysicsSettings.air_resistance * dt
-        if speed < air_resistance_force:
-            self.velocity.setX(0.0)
-            self.velocity.setY(0.0)
-        else:
-            self.velocity -= self.velocity.normalized() * air_resistance_force
-
-        # Get current position
-        current_rect = self.geometry()
-        self.position += self.velocity * dt
-
-        # Bounce off screen edges
-        if self.position.x() <= 0.0:
-            self.position.setX(0.0)
-            self.velocity.setX(abs(self.velocity.x()) * PhysicsSettings.bounce_damping)
-        elif self.position.x() + current_rect.width() >= screen.width():
-            self.position.setX(screen.width() - current_rect.width())
-            self.velocity.setX(-abs(self.velocity.x()) * PhysicsSettings.bounce_damping)
-
-        if self.position.y() <= 0.0:
-            self.position.setY(0.0)
-            self.velocity.setY(abs(self.velocity.y()) * PhysicsSettings.bounce_damping)
-        elif self.position.y() + current_rect.height() >= screen.height():
-            self.position.setY(screen.height() - current_rect.height())
-            self.velocity.setY(-abs(self.velocity.y()) * PhysicsSettings.bounce_damping)
-
-            # friction
-            friction_force = PhysicsSettings.friction * dt
-            if abs(self.velocity.x()) < friction_force:
-                self.velocity.setX(0.0)
-            else:
-                self.velocity.setX(self.velocity.x() - math.copysign(friction_force, self.velocity.x()))
-
-        # Stop very small movements to prevent jitter
-        if abs(self.velocity.x()) < 1.0:
-            self.velocity.setX(0.0)
-        if abs(self.velocity.y()) < 1.0:
-            self.velocity.setY(0.0)
-
-        # Update position
-        self.setWindowPositionToCharacterPosition()
+        self.physics.velocity = QVector2D(pos_diff) / time_diff
 
     def closeEvent(self, event):
         """Clean up when closing"""
         self.physics_timer.stop()
         event.accept()
+
+    def updateFrame(self):
+        if self.is_dragging:
+            self.physics.position = QVector2D(self.frameGeometry().topLeft())
+            self.last_physics_time = time.time()
+            return
+
+        dt = time.time() - self.last_physics_time
+        self.last_physics_time = time.time()
+        if dt > 0.1:
+            return
+
+        screen = QApplication.primaryScreen().geometry()
+        self.physics.applyPhysics(dt, screen)
+        self.move(self.physics.position.toPoint())
 
 
 class DesktopPetManager:
@@ -254,6 +183,7 @@ class DesktopPetManager:
         self.pets.clear()
 
     def debugTick(self):
+        return
         DesktopInteractionManager.updateAllWindowsList()
 
         print(f"[DEBUG] Windows on Desktop:")
