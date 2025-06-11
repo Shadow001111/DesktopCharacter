@@ -5,6 +5,7 @@ import win32con
 import win32gui
 
 
+# TODO: add previous position
 @dataclass
 class WindowInfo:
     hwnd: int
@@ -21,7 +22,7 @@ class DesktopInteractionManager:
         "Progman",
     )
 
-    windows: list[WindowInfo] = []
+    windows: dict[int, WindowInfo] = {}
 
     @staticmethod
     def updateAllWindowsList():
@@ -72,16 +73,18 @@ class DesktopInteractionManager:
                 return
 
             # If all filters passed, add this window to the list with its info
-            DesktopInteractionManager.windows.append(WindowInfo(
+            info = WindowInfo(
                 hwnd=hwnd,
                 title=title,
                 class_name=class_name,
                 position=(x, y),
                 size=(x2 - x, y2 - y),
                 z=order_counter
-            ))
+            )
+
+            DesktopInteractionManager.windows[hwnd] = info
 
             order_counter += 1
 
-        DesktopInteractionManager.windows.clear()
         win32gui.EnumWindows(callback, None)
+        # TODO: delete discarded windows from the data(windows), check if they fot closed etc. And update windows' previous data too.

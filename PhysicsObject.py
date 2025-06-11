@@ -3,7 +3,7 @@ from dataclasses import dataclass
 
 from PyQt5.QtGui import QVector2D
 
-from DesktopInteractionManager import DesktopInteractionManager
+from DesktopInteractionManager import DesktopInteractionManager, win32gui
 
 
 # TODO: Using pyqt5 vector must be slow, so maybe use numpy or something
@@ -13,7 +13,7 @@ class PhysicsSettings:
     friction = 2000.0  # per second
     air_resistance = 0.001
     bounce_damping = 0.5
-    min_velocity = 1.0
+    min_velocity = 30.0
 
 
 @dataclass
@@ -25,6 +25,7 @@ class CollisionBorder:
 
 @dataclass
 class CollisionBordersGroup:
+    hwnd: int
     x_s: list[tuple[float, float]]
     y: float
 
@@ -54,9 +55,21 @@ class PhysicsObject:
         self.velocity = QVector2D(0.0, 0.0)
         self.size = QVector2D(*size)
 
+        self.last_collided_window_hwnd: None | int = None
+        self.standing_on_window_hwnd: None | int = None
+
     def applyPhysics(self, dt, screen_rect):
+        # Windows
+        # TODO: Update windows info rarely and not per character
+        DesktopInteractionManager.updateAllWindowsList()
+
+        self.handleStandingOnWindow()
+
         # Gravity
-        self.velocity += QVector2D(0.0, PhysicsSettings.gravity * dt)
+        if self.standing_on_window_hwnd is None:
+            self.velocity += QVector2D(0.0, PhysicsSettings.gravity * dt)
+        else:
+            self.velocity.setY(0.0)
 
         # Air resistance
         speed_squared = self.velocity.lengthSquared()
@@ -69,12 +82,18 @@ class PhysicsObject:
         self.position += self.velocity * dt
 
         # Bounce and clamp
-        applyFriction = self.screenBordersCollision(screen_rect)
-        if not applyFriction and self.velocity.y() > 0:  # Character didn't hit the bottom and they are falling
-            applyFriction = self.windowsCollision(previous_y)
+        apply_friction = False
+        if self.standing_on_window_hwnd is None:
+            self.standing_on_window_hwnd = None
+            self.last_collided_window_hwnd = None
+            apply_friction = self.screenBordersCollision(screen_rect)
+            if not apply_friction and self.velocity.y() > 0:  # Character didn't hit the bottom and they are falling
+                apply_friction = self.windowsCollision(previous_y)
+        else:
+            apply_friction = True
 
         # Friction
-        if applyFriction:
+        if apply_friction:
             friction = PhysicsSettings.friction * dt
             if abs(self.velocity.x()) < friction:
                 self.velocity.setX(0.0)
@@ -86,6 +105,30 @@ class PhysicsObject:
             self.velocity.setX(0.0)
         if abs(self.velocity.y()) < PhysicsSettings.min_velocity:
             self.velocity.setY(0.0)
+            if self.last_collided_window_hwnd is not None:
+                self.standing_on_window_hwnd = self.last_collided_window_hwnd
+
+    def handleStandingOnWindow(self):
+        if self.standing_on_window_hwnd is None:
+            return
+
+        if self.standing_on_window_hwnd not in DesktopInteractionManager.windows:
+            self.standing_on_window_hwnd = None
+            return
+
+        rect = win32gui.GetWindowRect(self.standing_on_window_hwnd)
+        w_x, w_y, w_x2, w_y2 = rect
+
+        x, y = self.position.x(), self.position.y()
+        w, h = self.size.x(), self.size.y()
+
+        if y + h - w_y > -1.0:
+            self.position.setY(w_y - h)
+            self.velocity.setY(0.0)
+            # Remain standing on window
+            return
+
+        self.standing_on_window_hwnd = None
 
     def screenBordersCollision(self, screen_rect) -> bool:
         apply_friction = False
@@ -115,11 +158,10 @@ class PhysicsObject:
     @staticmethod
     def getCollisionBordersGroups() -> list[CollisionBordersGroup]:
         bordersGroups = []
-        DesktopInteractionManager.updateAllWindowsList()
 
         # Collect all visible borders
         # TODO: Store CharacterMax_YMinusH(max_y_minus_height from all characters) and if window.y is above it, then don't include the top border
-        for windowInfo in DesktopInteractionManager.windows:
+        for hwnd, windowInfo in DesktopInteractionManager.windows.items():
             border = CollisionBorder(
                 x=windowInfo.position[0],
                 y=windowInfo.position[1],
@@ -130,10 +172,10 @@ class PhysicsObject:
 
             # Find intersecting rectangles
             # TODO: 'windows' list is sorted by 'z' in ascending order, so we can use index and use list slices to skip all unnecessary windows
-            for windowInfo2 in DesktopInteractionManager.windows:
+            for windowInfo2 in DesktopInteractionManager.windows.values():
                 if windowInfo.z < windowInfo2.z:  # if out segment is in front of window
                     continue
-                if windowInfo is windowInfo2:
+                if hwnd == windowInfo2.hwnd:
                     continue
                 r_top = windowInfo2.position[1]
                 r_bottom = windowInfo2.position[1] + windowInfo2.size[1]
@@ -143,11 +185,13 @@ class PhysicsObject:
                     covering_intervals.append((r_left, r_right))
 
             #
-            bordersGroup = CollisionBordersGroup(x_s=[], y=border.y)
+            bordersGroup = CollisionBordersGroup(hwnd=hwnd, x_s=[], y=border.y)
             visible_segments = subtractIntervals(border.x, border.x2, covering_intervals)
             for seg_x1, seg_x2 in visible_segments:
                 bordersGroup.x_s.append((seg_x1, seg_x2))
             bordersGroups.append(bordersGroup)
+
+        bordersGroups.sort(key=lambda x: x.y)
 
         return bordersGroups
 
@@ -157,12 +201,13 @@ class PhysicsObject:
         char_left = x
         char_right = x + w
 
-        # TODO: Update windows info rarely and not per character
-
+        # 'borderGroups' list is sorted by 'y' in ascending order, that means next group is lower than the previous one
+        # That means we will check true collision window first
         bordersGroups = PhysicsObject.getCollisionBordersGroups()
 
         for bordersGroup in bordersGroups:
-            if not (y + h > bordersGroup.y >= previous_y + h):
+            # TODO: I think I need window's previousY here
+            if not (y + h > bordersGroup.y and bordersGroup.y >= previous_y + h):
                 continue
 
             for border_x1, border_x2 in bordersGroup.x_s:
@@ -172,5 +217,6 @@ class PhysicsObject:
 
                 self.position.setY(bordersGroup.y - h)
                 self.velocity.setY(self.velocity.y() * -PhysicsSettings.bounce_damping)
+                self.last_collided_window_hwnd = bordersGroup.hwnd
                 return True
         return False
